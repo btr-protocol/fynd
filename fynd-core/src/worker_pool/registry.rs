@@ -12,14 +12,12 @@
 //! 3. Add the algorithm name to `AVAILABLE_ALGORITHMS`
 
 use std::{
-    panic::{catch_unwind, AssertUnwindSafe},
     sync::Arc,
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use tokio::sync::broadcast;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     algorithm::{
@@ -29,7 +27,7 @@ use crate::{
     derived::{events::DerivedDataEvent, SharedDerivedDataRef},
     feed::{events::MarketEvent, market_data::MarketData},
     types::internal::SolveTask,
-    worker_pool::worker::SolverWorker,
+    worker_pool::supervisor::{RespawnPolicy, WorkerContext},
     worker_pool_router::LiquidityScope,
 };
 
@@ -39,10 +37,6 @@ pub(crate) const AVAILABLE_ALGORITHMS: &[&str] =
 
 /// Default algorithm to use if none specified.
 pub(crate) const DEFAULT_ALGORITHM: &str = "most_liquid";
-
-/// Pause before respawning a panicked worker, so a panic during worker
-/// initialization cannot turn the respawn loop into a hot spin.
-const RESPAWN_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Parameters for spawning workers.
 pub(crate) struct SpawnWorkersParams {
@@ -70,6 +64,10 @@ pub(crate) struct SpawnWorkersParams {
     pub liquidity_scope: LiquidityScope,
     /// Protocol systems every worker in this worker pool leaves out of its graph.
     pub exclude_protocols: Vec<String>,
+    /// Retry policy for respawning panicked workers.
+    pub respawn_policy: RespawnPolicy,
+    /// Called when a worker gives up respawning.
+    pub on_worker_gave_up: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Error returned when algorithm registration fails.
@@ -166,13 +164,11 @@ impl AlgorithmSpawner {
 
 /// Generic worker spawning logic.
 ///
-/// This handles the common parts of spawning workers:
-/// - Creating threads with proper names
-/// - Setting up tokio runtimes
-/// - Initializing graphs and running worker loops
-///
-/// The `factory` closure is called once per worker to create the algorithm instance.
-/// It is borrowed rather than consumed, so callers (including type-erased spawner closures)
+/// Each worker thread runs sessions in a loop (see [`WorkerContext::run_sessions`]):
+/// a panic ends the current session and the worker is respawned after a backoff,
+/// giving up after repeated rapid failures. The `factory` closure is called at
+/// every session (re)start, so it must tolerate repeated calls. It is borrowed
+/// rather than consumed, so callers (including type-erased spawner closures)
 /// can call this function without giving up ownership of the factory.
 pub(crate) fn spawn_workers_generic<A, F>(
     params: SpawnWorkersParams,
@@ -187,104 +183,30 @@ where
     let mut workers = Vec::with_capacity(params.num_workers);
 
     for worker_id in 0..params.num_workers {
-        let task_rx = params.task_rx.clone();
-        let market_data = params.market_data.clone();
-        let derived_data = Arc::clone(&params.derived_data);
-        let event_rx = params.event_rx.resubscribe();
-        let derived_event_rx = params.derived_event_rx.resubscribe();
-        let algorithm_config = params.algorithm_config.clone();
-        // Subscribed before the thread starts so shutdown signals sent at any point,
-        // including while the worker is recovering from a panic, are never missed.
-        let mut shutdown_rx = params.shutdown_tx.subscribe();
-        let algorithm_name = params.algorithm.clone();
-        let pool_name = params.pool_name.clone();
-        let factory = factory.clone();
-        let liquidity_scope = params.liquidity_scope;
-        let exclude_protocols = params.exclude_protocols.clone();
+        let ctx = WorkerContext {
+            worker_id,
+            algorithm_name: params.algorithm.clone(),
+            pool_name: params.pool_name.clone(),
+            factory: factory.clone(),
+            algorithm_config: params.algorithm_config.clone(),
+            market_data: params.market_data.clone(),
+            derived_data: Arc::clone(&params.derived_data),
+            task_rx: params.task_rx.clone(),
+            event_rx: params.event_rx.resubscribe(),
+            derived_event_rx: params.derived_event_rx.resubscribe(),
+            // Subscribed before the thread starts so shutdown signals sent at any
+            // point, including while the worker is recovering from a panic, are
+            // never missed.
+            shutdown_rx: params.shutdown_tx.subscribe(),
+            liquidity_scope: params.liquidity_scope,
+            exclude_protocols: params.exclude_protocols.clone(),
+            respawn_policy: params.respawn_policy,
+            on_worker_gave_up: Arc::clone(&params.on_worker_gave_up),
+        };
 
         let handle = thread::Builder::new()
-            .name(format!("{}-worker-{}", algorithm_name, worker_id))
-            .spawn(move || {
-                // Run worker sessions until clean shutdown. A panic while solving (e.g. pool
-                // math dividing by zero) only ends the current session: it is reported loudly
-                // and the worker is respawned, instead of silently losing the thread until
-                // every worker in the pool is dead.
-                loop {
-                    // Fresh receivers for this session; the previous session's receivers are
-                    // consumed (or poisoned) when it panics.
-                    let session_event_rx = event_rx.resubscribe();
-                    let session_derived_event_rx = derived_event_rx.resubscribe();
-                    let session_shutdown_rx = shutdown_rx.resubscribe();
-
-                    // A shutdown sent while no session was listening (e.g. mid-respawn) is
-                    // buffered in the receiver created before the thread started.
-                    match shutdown_rx.try_recv() {
-                        Err(broadcast::error::TryRecvError::Empty) => {}
-                        // Received a shutdown, or the pool dropped the sender.
-                        _ => break,
-                    }
-
-                    let session = catch_unwind(AssertUnwindSafe(|| {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .expect("failed to create tokio runtime");
-
-                        rt.block_on(async {
-                            let algorithm = factory(algorithm_config.clone());
-
-                            let mut worker = SolverWorker::new(
-                                market_data.clone(),
-                                Arc::clone(&derived_data),
-                                algorithm,
-                                worker_id,
-                                pool_name.clone(),
-                            )
-                            .with_liquidity_scope(liquidity_scope)
-                            .with_exclude_protocols(exclude_protocols.clone())
-                            .with_fallback_fee_tiers(fallback_fee_tiers.clone());
-
-                            worker.initialize_graph().await;
-                            worker
-                                .run(
-                                    session_event_rx,
-                                    session_derived_event_rx,
-                                    task_rx.clone(),
-                                    session_shutdown_rx,
-                                )
-                                .await;
-                        });
-                    }));
-
-                    match session {
-                        Ok(()) => break,
-                        Err(panic_payload) => {
-                            let panic_message = panic_payload
-                                .downcast_ref::<&str>()
-                                .copied()
-                                .or_else(|| {
-                                    panic_payload
-                                        .downcast_ref::<String>()
-                                        .map(String::as_str)
-                                })
-                                .unwrap_or("<non-string panic payload>");
-                            error!(
-                                pool = %pool_name,
-                                algorithm = %algorithm_name,
-                                worker_id,
-                                panic = %panic_message,
-                                "worker thread panicked; respawning worker"
-                            );
-                            metrics::counter!(
-                                "worker_pool_worker_panics_total",
-                                "pool" => pool_name.clone()
-                            )
-                            .increment(1);
-                            thread::sleep(RESPAWN_BACKOFF);
-                        }
-                    }
-                }
-            })
+            .name(format!("{}-worker-{}", params.algorithm, worker_id))
+            .spawn(move || ctx.run_sessions())
             .expect("failed to spawn worker thread");
 
         workers.push(handle);
@@ -352,6 +274,12 @@ mod tests {
         types::{quote::OrderSide, Order, RouteResult, SolveError},
     };
 
+    /// A deadline long enough that these tests never reach it, so they measure the queue
+    /// rather than the router giving up.
+    fn long_deadline() -> Instant {
+        Instant::now() + std::time::Duration::from_secs(60)
+    }
+
     fn make_params(algorithm: &str, num_workers: usize) -> SpawnWorkersParams {
         let (_task_tx, task_rx) = async_channel::bounded(10);
         let market_data = MarketData::new_shared();
@@ -372,6 +300,8 @@ mod tests {
             shutdown_tx,
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {}),
         }
     }
 
@@ -412,6 +342,8 @@ mod tests {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {}),
         };
 
         let workers =
@@ -455,6 +387,8 @@ mod tests {
                 shutdown_tx: shutdown_tx.clone(),
                 liquidity_scope: LiquidityScope::default(),
                 exclude_protocols: Vec::new(),
+                respawn_policy: RespawnPolicy::default(),
+                on_worker_gave_up: Arc::new(|| {}),
             });
         assert!(registry_err.is_err());
 
@@ -484,6 +418,8 @@ mod tests {
                 shutdown_tx: shutdown_tx.clone(),
                 liquidity_scope: LiquidityScope::default(),
                 exclude_protocols: Vec::new(),
+                respawn_policy: RespawnPolicy::default(),
+                on_worker_gave_up: Arc::new(|| {}),
             });
 
         assert!(workers.is_ok());
@@ -553,7 +489,8 @@ mod tests {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
-            fallback_fee_tiers: SharedFeeTiers::default(),
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {}),
         };
         let factory = |_config: AlgorithmConfig| PanicOnPoisonAlgorithm;
         let workers = spawn_workers_generic(params, &factory);
@@ -565,7 +502,7 @@ mod tests {
         let (poison_tx, poison_rx) = oneshot::channel();
         let poison_order = order(&token_a, &token_b, POISON_AMOUNT as u128, OrderSide::Sell);
         task_tx
-            .send(SolveTask::new(Uuid::new_v4(), poison_order, poison_tx))
+            .send(SolveTask::new(Uuid::new_v4(), poison_order, poison_tx, long_deadline()))
             .await
             .unwrap();
         let _ = poison_rx.await;
@@ -574,7 +511,7 @@ mod tests {
         let (ok_tx, ok_rx) = oneshot::channel();
         let normal_order = order(&token_a, &token_b, 100, OrderSide::Sell);
         task_tx
-            .send(SolveTask::new(Uuid::new_v4(), normal_order, ok_tx))
+            .send(SolveTask::new(Uuid::new_v4(), normal_order, ok_tx, long_deadline()))
             .await
             .unwrap();
         let response = tokio::time::timeout(Duration::from_secs(5), ok_rx)
@@ -618,7 +555,8 @@ mod tests {
             shutdown_tx,
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
-            fallback_fee_tiers: SharedFeeTiers::default(),
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {}),
         };
         let factory = |_config: AlgorithmConfig| PanicOnPoisonAlgorithm;
         let workers = spawn_workers_generic(params, &factory);
@@ -658,6 +596,8 @@ mod tests {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {}),
         };
 
         let workers =
@@ -691,6 +631,8 @@ mod tests {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {}),
         };
 
         let workers =

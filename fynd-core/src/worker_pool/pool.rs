@@ -8,7 +8,7 @@
 //! Worker pools can use either a built-in algorithm (by name via [`WorkerPoolBuilder::algorithm`])
 //! or a custom [`Algorithm`](crate::algorithm::Algorithm) implementation (via
 //! [`WorkerPoolBuilder::with_algorithm`]).
-use std::thread::JoinHandle;
+use std::{sync::Arc, thread::JoinHandle};
 
 use tokio::sync::broadcast;
 use tracing::{error, info};
@@ -27,6 +27,7 @@ use crate::{
             spawn_workers_generic, AlgorithmSpawner, SpawnWorkersParams, UnknownAlgorithmError,
             DEFAULT_ALGORITHM,
         },
+        supervisor::RespawnPolicy,
         task_queue::{TaskQueue, TaskQueueConfig, TaskQueueHandle},
     },
     worker_pool_router::LiquidityScope,
@@ -135,6 +136,11 @@ impl WorkerPool {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope,
             exclude_protocols,
+            respawn_policy: RespawnPolicy::default(),
+            on_worker_gave_up: Arc::new(|| {
+                error!("a solver worker gave up after repeated panics; exiting so the orchestrator restarts the process");
+                std::process::exit(1);
+            }),
         };
         let workers = config.spawner.spawn(params)?;
 
