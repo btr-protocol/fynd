@@ -429,10 +429,11 @@ mod tests {
     }
 
     /// Amount marking the order whose solve panics in [`PanicOnPoisonAlgorithm`].
-    const POISON_AMOUNT: u64 = 666;
+    const POISON_AMOUNT: u128 = 666;
 
     /// Algorithm that panics while solving the poison order and returns an error
-    /// otherwise. Used to verify that a panicking task does not kill the worker.
+    /// otherwise. Used to verify that a panicking task does not permanently lose the
+    /// worker: the worker respawns.
     #[derive(Clone)]
     struct PanicOnPoisonAlgorithm;
 
@@ -500,21 +501,24 @@ mod tests {
 
         // The poison task panics mid-solve; its response channel is dropped.
         let (poison_tx, poison_rx) = oneshot::channel();
-        let poison_order = order(&token_a, &token_b, POISON_AMOUNT as u128, OrderSide::Sell);
+        let poison_order = order(&token_a, &token_b, POISON_AMOUNT, OrderSide::Sell);
         task_tx
             .send(SolveTask::new(Uuid::new_v4(), poison_order, poison_tx, long_deadline()))
             .await
             .unwrap();
-        let _ = poison_rx.await;
+        tokio::time::timeout(Duration::from_secs(5), poison_rx)
+            .await
+            .expect("poison task should be picked up")
+            .expect_err("poison task must panic, not respond");
 
         // The worker must come back and answer the next task.
-        let (ok_tx, ok_rx) = oneshot::channel();
+        let (normal_tx, normal_rx) = oneshot::channel();
         let normal_order = order(&token_a, &token_b, 100, OrderSide::Sell);
         task_tx
-            .send(SolveTask::new(Uuid::new_v4(), normal_order, ok_tx, long_deadline()))
+            .send(SolveTask::new(Uuid::new_v4(), normal_order, normal_tx, long_deadline()))
             .await
             .unwrap();
-        let response = tokio::time::timeout(Duration::from_secs(5), ok_rx)
+        let response = tokio::time::timeout(Duration::from_secs(5), normal_rx)
             .await
             .expect("worker should respawn after the panic and process the next task")
             .expect("worker should respond to the task");
@@ -597,7 +601,6 @@ mod tests {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
-            fallback_fee_tiers: SharedFeeTiers::default(),
             respawn_policy: RespawnPolicy {
                 initial_backoff: Duration::from_millis(1),
                 max_backoff: Duration::from_millis(2),
@@ -648,7 +651,6 @@ mod tests {
             shutdown_tx: shutdown_tx.clone(),
             liquidity_scope: LiquidityScope::default(),
             exclude_protocols: Vec::new(),
-            fallback_fee_tiers: SharedFeeTiers::default(),
             respawn_policy: RespawnPolicy {
                 initial_backoff: Duration::from_millis(500),
                 ..RespawnPolicy::default()
@@ -666,7 +668,7 @@ mod tests {
         let (poison_tx, poison_rx) = oneshot::channel();
         let poison_order = order(&token_a, &token_b, POISON_AMOUNT as u128, OrderSide::Sell);
         task_tx
-            .send(SolveTask::new(Uuid::new_v4(), poison_order, poison_tx))
+            .send(SolveTask::new(Uuid::new_v4(), poison_order, poison_tx, long_deadline()))
             .await
             .unwrap();
         assert!(poison_rx.await.is_err());

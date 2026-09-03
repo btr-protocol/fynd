@@ -153,8 +153,7 @@ where
                         self.pool_name.clone(),
                     )
                     .with_liquidity_scope(self.liquidity_scope)
-                    .with_exclude_protocols(self.exclude_protocols.clone())
-                    .with_fallback_fee_tiers(self.fallback_fee_tiers.clone());
+                    .with_exclude_protocols(self.exclude_protocols.clone());
 
                     worker.initialize_graph().await;
                     worker
