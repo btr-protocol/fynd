@@ -807,7 +807,7 @@ mod tests {
                     .derived_data
                     .write()
                     .await
-                    .set_token_prices(Default::default(), vec![], 19_000_000, true);
+                    .set_token_prices(Default::default(), vec![], 19_000_000);
             }
             let app = test::init_service(
                 App::new()
@@ -850,7 +850,6 @@ mod tests {
                     .collect(),
                 vec![],
                 19_000_000,
-                true,
             );
         }
         let app = test::init_service(
@@ -891,7 +890,6 @@ mod tests {
                 .collect(),
                 vec![],
                 19_000_000,
-                true,
             );
         }
         let app = test::init_service(
@@ -922,9 +920,9 @@ mod tests {
         seed_tycho_head(&state).await;
         {
             let mut store = state.derived_data.write().await;
-            store.set_token_prices(Default::default(), vec![], 19_000_000, true);
-            store.set_spot_prices(Default::default(), vec![], 18_999_999, true);
-            store.set_component_depths(Default::default(), vec![], 18_999_998, true);
+            store.set_token_prices(Default::default(), vec![], 19_000_000);
+            store.set_spot_prices(Default::default(), vec![], 18_999_999);
+            store.set_component_depths(Default::default(), vec![], 18_999_998);
         }
         let state = web::Data::new(state);
         let app = test::init_service(
@@ -1016,10 +1014,9 @@ mod tests {
                     .collect(),
                 vec![],
                 19_000_000,
-                true,
             );
-            store.set_spot_prices(spot_prices, vec![], 19_000_000, true);
-            store.set_component_depths(component_depths, vec![], 19_000_000, true);
+            store.set_spot_prices(spot_prices, vec![], 19_000_000);
+            store.set_component_depths(component_depths, vec![], 19_000_000);
         }
 
         let app = test::init_service(
@@ -1111,7 +1108,7 @@ mod tests {
             .derived_data
             .write()
             .await
-            .set_token_prices(token_prices, vec![], 19_000_000, true);
+            .set_token_prices(token_prices, vec![], 19_000_000);
 
         let app = test::init_service(
             App::new()
@@ -1167,7 +1164,7 @@ mod tests {
             .derived_data
             .write()
             .await
-            .set_token_prices(token_prices, vec![], 19_000_000, true);
+            .set_token_prices(token_prices, vec![], 19_000_000);
 
         let app = test::init_service(
             App::new()
@@ -1267,7 +1264,6 @@ mod tests {
                 .collect(),
                 vec![],
                 19_000_000,
-                true,
             );
             store.set_component_depths(
                 [
@@ -1278,7 +1274,6 @@ mod tests {
                 .collect(),
                 vec![],
                 19_000_000,
-                true,
             );
         }
 
@@ -1403,7 +1398,7 @@ mod tests {
             .derived_data
             .write()
             .await
-            .set_token_prices(Default::default(), vec![], 19_000_000, true);
+            .set_token_prices(Default::default(), vec![], 19_000_000);
         let entries = (0..1001)
             .map(|index| {
                 let mut address = [0u8; 20];
