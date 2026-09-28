@@ -1004,7 +1004,8 @@ mod tests {
         fallback::{manager::PammState, FALLBACK_PREFIX},
         graph::petgraph::{PetgraphStableDiGraphManager, StableDiGraph},
         types::{
-            ComponentId, OrderSide, Route, RouteExclusionFilter, RouteRejection, RouteResult, Swap,
+            test_utils::long_deadline, ComponentId, OrderSide, Route, RouteExclusionFilter,
+            RouteRejection, RouteResult, Swap,
         },
         AlgorithmError,
     };
@@ -1758,7 +1759,7 @@ mod tests {
     }
 
     /// A worker whose fallback pool index describes `market`.
-    fn admission_worker(market: MarketData) -> SolverWorker<MockAlgorithm> {
+    fn admission_worker(market: MarketData) -> SolverWorker<StubAlgorithm> {
         let mut worker = SolverWorker::new(
             market.clone(),
             DerivedData::new_shared(),
@@ -1808,7 +1809,7 @@ mod tests {
 
     /// Runs `event` through both of the worker's rules, in the order `process_event` runs them.
     fn admit(
-        worker: &mut SolverWorker<MockAlgorithm>,
+        worker: &mut SolverWorker<StubAlgorithm>,
         market: &MarketData,
         mut event: MarketEvent,
     ) -> MarketEvent {
@@ -2274,6 +2275,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 order(&token_a, &token_b, 100, OrderSide::Sell),
                 response_tx,
+                long_deadline(),
             ))
             .await
             .expect("worker should be receiving tasks");

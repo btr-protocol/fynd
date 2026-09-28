@@ -24,9 +24,9 @@ use tycho_simulation::{
 };
 
 use crate::{
-    algorithm::{most_liquid::DepthAndPrice, Algorithm, AlgorithmError},
-    derived::{computation::ComputationRequirements, SharedDerivedDataRef},
-    feed::market_data::{MarketData, MarketState, StateLabel},
+    algorithm::{most_liquid::DepthAndPrice, Algorithm, AlgorithmError, SolveRequest},
+    derived::computation::ComputationRequirements,
+    feed::market_data::{MarketData, MarketState},
     graph::{
         petgraph::{PetgraphStableDiGraphManager, StableDiGraph},
         GraphManager, TopologyGraphManager,
@@ -691,13 +691,9 @@ impl Algorithm for StubAlgorithm {
 
     async fn find_best_route(
         &self,
-        _graph: &Self::GraphType,
-        _market: MarketData,
-        _label: Option<StateLabel>,
-        _derived: Option<SharedDerivedDataRef>,
-        order: &Order,
+        request: SolveRequest<'_, Self::GraphType>,
     ) -> Result<RouteResult, AlgorithmError> {
-        (self.solve)(order)
+        (self.solve)(request.order())
     }
 
     fn computation_requirements(&self) -> ComputationRequirements {

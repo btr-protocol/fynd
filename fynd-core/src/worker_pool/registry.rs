@@ -269,14 +269,8 @@ mod tests {
         },
         derived::DerivedData,
         feed::market_data::MarketData,
-        types::{quote::OrderSide, SolveError},
+        types::{quote::OrderSide, test_utils::long_deadline, SolveError},
     };
-
-    /// A deadline long enough that these tests never reach it, so they measure the queue
-    /// rather than the router giving up.
-    fn long_deadline() -> Instant {
-        Instant::now() + std::time::Duration::from_secs(60)
-    }
 
     fn make_params(algorithm: &str, num_workers: usize) -> SpawnWorkersParams {
         let (_task_tx, task_rx) = async_channel::bounded(10);
