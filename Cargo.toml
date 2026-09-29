@@ -231,8 +231,8 @@ opt-level = 2
 
 # Kuru (Monad CLOB) lives in our tycho fork until upstreamed.
 [patch.crates-io]
-tycho-simulation = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
-tycho-execution = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
-tycho-common = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
-tycho-client = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
-tycho-ethereum = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
+tycho-simulation = { git = "https://github.com/btr-protocol/tycho", branch = "btr/monad" }
+tycho-execution = { git = "https://github.com/btr-protocol/tycho", branch = "btr/monad" }
+tycho-common = { git = "https://github.com/btr-protocol/tycho", branch = "btr/monad" }
+tycho-client = { git = "https://github.com/btr-protocol/tycho", branch = "btr/monad" }
+tycho-ethereum = { git = "https://github.com/btr-protocol/tycho", branch = "btr/monad" }
