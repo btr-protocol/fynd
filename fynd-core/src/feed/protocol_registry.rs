@@ -8,6 +8,7 @@ use tycho_simulation::{
         protocol::{
             aerodrome_slipstreams::state::AerodromeSlipstreamsState,
             aerodrome_v1::state::AerodromeV1State,
+            balancer_v3::BalancerV3State,
             curve::CurveState,
             ekubo::state::EkuboState,
             ekubo_v3::state::EkuboV3State,
@@ -355,6 +356,9 @@ fn register_exchange(
             Some(balancer_v2_pool_filter),
         ),
         "uniswap_v4" => builder.exchange::<UniswapV4State>("uniswap_v4", tvl_filter.clone(), None),
+        "vm:balancer_v3" => {
+            builder.exchange::<BalancerV3State>("vm:balancer_v3", tvl_filter.clone(), None)
+        }
         "kuru" => builder.exchange::<KuruState>("kuru", tvl_filter.clone(), None),
         "ekubo_v2" => builder.exchange::<EkuboState>("ekubo_v2", tvl_filter.clone(), None),
         "vm:curve" => {
@@ -989,7 +993,8 @@ mod tests {
 
     #[test]
     fn test_register_exchanges_registers_every_monad_protocol() {
-        let monad_protocols = ["uniswap_v3", "pancakeswap_v3", "uniswap_v4", "kuru"];
+        let monad_protocols =
+            ["uniswap_v3", "pancakeswap_v3", "uniswap_v4", "kuru", "vm:balancer_v3", "vm:curve"];
         let skipped = skipped_unknown_protocols(&monad_protocols);
         assert!(
             skipped.is_empty(),
