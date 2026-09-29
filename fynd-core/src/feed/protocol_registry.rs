@@ -18,6 +18,7 @@ use tycho_simulation::{
                 fluid_v1_paused_pools_filter,
             },
             fluid::FluidV1,
+            kuru::state::KuruState,
             lunarbase::state::LunarBaseState,
             pancakeswap_v2::state::PancakeswapV2State,
             ramses_v3::state::RamsesV3State,
@@ -354,6 +355,7 @@ fn register_exchange(
             Some(balancer_v2_pool_filter),
         ),
         "uniswap_v4" => builder.exchange::<UniswapV4State>("uniswap_v4", tvl_filter.clone(), None),
+        "kuru" => builder.exchange::<KuruState>("kuru", tvl_filter.clone(), None),
         "ekubo_v2" => builder.exchange::<EkuboState>("ekubo_v2", tvl_filter.clone(), None),
         "vm:curve" => {
             // The hybrid CurveState with tycho-simulation's own curve_filter, which drops
@@ -982,6 +984,17 @@ mod tests {
             skipped.is_empty(),
             "expected every Robinhood protocol to register, but got unknown-protocol warnings \
              for: {skipped:?}"
+        );
+    }
+
+    #[test]
+    fn test_register_exchanges_registers_every_monad_protocol() {
+        let monad_protocols = ["uniswap_v3", "pancakeswap_v3", "uniswap_v4", "kuru"];
+        let skipped = skipped_unknown_protocols(&monad_protocols);
+        assert!(
+            skipped.is_empty(),
+            "expected every Monad protocol to register, but got unknown-protocol warnings for: \
+             {skipped:?}"
         );
     }
 
