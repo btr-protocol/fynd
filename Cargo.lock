@@ -4149,7 +4149,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -4562,6 +4562,11 @@ name = "konst_macro_rules"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
+
+[[package]]
+name = "kuru-book"
+version = "0.430.0"
+source = "git+https://github.com/pde-rent/tycho?branch=feat%2Fkuru#8eb11f54b43e8b0331411394236a1f55f67b9bab"
 
 [[package]]
 name = "lambdaworks-crypto"
@@ -5716,7 +5721,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5754,7 +5759,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.59.0",
 ]
@@ -7952,9 +7957,8 @@ dependencies = [
 
 [[package]]
 name = "tycho-client"
-version = "0.427.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aaaf8e828d5a23677f5f925cc5edf8f7d70e06b39852939b9cabc9a770776cf"
+version = "0.430.0"
+source = "git+https://github.com/pde-rent/tycho?branch=feat%2Fkuru#8eb11f54b43e8b0331411394236a1f55f67b9bab"
 dependencies = [
  "async-trait",
  "backoff",
@@ -7982,9 +7986,8 @@ dependencies = [
 
 [[package]]
 name = "tycho-common"
-version = "0.427.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41a4963df9f7c5256c485293c3547f77fc7bbfb407b3834eb69fb13fa56c870e"
+version = "0.430.0"
+source = "git+https://github.com/pde-rent/tycho?branch=feat%2Fkuru#8eb11f54b43e8b0331411394236a1f55f67b9bab"
 dependencies = [
  "anyhow",
  "arrayvec",
@@ -8011,9 +8014,8 @@ dependencies = [
 
 [[package]]
 name = "tycho-ethereum"
-version = "0.427.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42e4e9b48acc0f04c9e24fca4bb6560cc75e453372bd22e75b3d4aef61e4fa63"
+version = "0.430.0"
+source = "git+https://github.com/pde-rent/tycho?branch=feat%2Fkuru#8eb11f54b43e8b0331411394236a1f55f67b9bab"
 dependencies = [
  "alloy",
  "async-trait",
@@ -8033,9 +8035,8 @@ dependencies = [
 
 [[package]]
 name = "tycho-execution"
-version = "0.427.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0812ee14e2d63e3b4bc5cb44accce2f692923ce7bd45b13b2cc39f1924590d9a"
+version = "0.430.0"
+source = "git+https://github.com/pde-rent/tycho?branch=feat%2Fkuru#8eb11f54b43e8b0331411394236a1f55f67b9bab"
 dependencies = [
  "alloy",
  "chrono",
@@ -8057,9 +8058,8 @@ dependencies = [
 
 [[package]]
 name = "tycho-simulation"
-version = "0.427.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38724ef0945ef9fd98f2d52acf6765bcac1a8abe46202ef90cba073a19c4ebdd"
+version = "0.430.0"
+source = "git+https://github.com/pde-rent/tycho?branch=feat%2Fkuru#8eb11f54b43e8b0331411394236a1f55f67b9bab"
 dependencies = [
  "alloy",
  "alloy-chains",
@@ -8079,6 +8079,7 @@ dependencies = [
  "hex-literal",
  "http 1.4.2",
  "itertools 0.13.0",
+ "kuru-book",
  "lunarbase-pmm-math",
  "num-bigint",
  "num-traits",

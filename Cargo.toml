@@ -228,3 +228,11 @@ debug = true
 # for derived data. The workspace's own code keeps the debug settings.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Kuru (Monad CLOB) lives in our tycho fork until upstreamed.
+[patch.crates-io]
+tycho-simulation = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
+tycho-execution = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
+tycho-common = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
+tycho-client = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
+tycho-ethereum = { git = "https://github.com/btr-protocol/tycho", branch = "feat/kuru" }
