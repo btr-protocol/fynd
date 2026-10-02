@@ -6,10 +6,11 @@
 //! the default router fees, and all per-client overrides. Failed fetches keep the previously
 //! stored values, so the encoder always has a usable fee configuration.
 //!
-//! A router without `getFeeCalculator` (e.g. a lean router that charges no fees) is detected on
-//! the first fetch: fees are set to zero and the loop stops instead of polling a call that can
-//! never succeed. Absence after a successful fetch is treated as a failure and keeps the stored
-//! fees.
+//! A router without `getFeeCalculator` (e.g. a lean router that charges no fees) is detected when
+//! [`ABSENT_CONFIRMATIONS`] consecutive fetches, before any success, find no FeeCalculator: fees
+//! are then set to zero. One lagging node or odd error must not zero fees on a router that has a
+//! calculator, so polling continues and a later calculator replaces the zero fees. Absence after
+//! a successful fetch is treated as a failure and keeps the stored fees.
 
 use std::time::Duration;
 
@@ -57,6 +58,9 @@ sol! {
 /// words (an address plus the four-field `CustomFees` tuple), so a full page is ~80 KB —
 /// well within node response limits.
 const CLIENT_FEE_PAGE_SIZE: usize = 500;
+
+/// Consecutive "no FeeCalculator" fetches (before any success) needed to store zero fees.
+const ABSENT_CONFIRMATIONS: u32 = 3;
 
 /// Error fetching router fees from chain.
 #[derive(Debug, thiserror::Error)]
@@ -112,14 +116,15 @@ impl RouterFeeFetcher {
     /// Runs the refresh loop: fetches immediately, then on every `refresh_interval` tick.
     ///
     /// Fetch failures are logged; the previously stored fees stay in effect until a fetch
-    /// succeeds. If the very first fetch finds the router has no FeeCalculator, stores zero fees
-    /// and returns.
+    /// succeeds. After [`ABSENT_CONFIRMATIONS`] consecutive fetches without any success that find
+    /// no FeeCalculator, stores zero fees; polling continues.
     pub async fn run(&self) {
         let mut ticker = interval(self.refresh_interval);
         // Skip missed ticks rather than catching up — fetches are best-effort.
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut fetched = false;
+        let mut absent = 0;
         loop {
             ticker.tick().await;
 
@@ -131,15 +136,18 @@ impl RouterFeeFetcher {
                     );
                 }
                 Ok(None) => {
-                    info!(
-                        router = %self.router_address,
-                        "router has no FeeCalculator; using zero router fees, fee refresh stopped"
-                    );
-                    self.shared_fees.set(RouterFees::zero());
-                    return;
+                    absent += 1;
+                    if absent == ABSENT_CONFIRMATIONS {
+                        info!(
+                            router = %self.router_address,
+                            "router has no FeeCalculator; using zero router fees"
+                        );
+                        self.shared_fees.set(RouterFees::zero());
+                    }
                 }
                 Ok(Some(fees)) => {
                     fetched = true;
+                    absent = 0;
                     info!(
                         custom_clients = fees.custom_client_count(),
                         "router fees refreshed from on-chain FeeCalculator"
@@ -147,6 +155,7 @@ impl RouterFeeFetcher {
                     self.shared_fees.set(fees);
                 }
                 Err(e) => {
+                    absent = 0;
                     warn!(
                         error = %e,
                         "failed to refresh router fees from chain; keeping previous values"
@@ -263,7 +272,7 @@ impl RouterFeeFetcher {
                 if e.code == 3 ||
                     e.message
                         .to_lowercase()
-                        .contains("revert") =>
+                        .starts_with("execution reverted") =>
             {
                 return Ok(None)
             }
@@ -519,16 +528,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_stores_zero_fees_and_stops_without_fee_calculator() {
+    async fn test_fetch_fees_revert_code_3_means_no_fee_calculator() {
         let asserter = Asserter::new();
-        asserter.push_failure_msg("execution reverted");
-        let fetcher = fetcher_with(&asserter);
+        asserter.push_failure(alloy::rpc::json_rpc::ErrorPayload {
+            code: 3,
+            message: "boom".into(),
+            data: None,
+        });
 
-        // A single revert response suffices: a second poll would hit an empty mock queue and
-        // `run` would never return, so completing proves the loop stopped.
-        tokio::time::timeout(Duration::from_secs(5), fetcher.run())
+        let fees = fetcher_with(&asserter)
+            .fetch_fees()
             .await
-            .expect("run stops when the router has no FeeCalculator");
+            .unwrap();
+
+        assert!(fees.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_fees_gateway_revert_text_is_error() {
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("request reverted by rate limiter");
+
+        fetcher_with(&asserter)
+            .fetch_fees()
+            .await
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn test_run_stores_zero_fees_after_confirmations_and_keeps_polling() {
+        let asserter = Asserter::new();
+        for _ in 0..ABSENT_CONFIRMATIONS {
+            asserter.push_failure_msg("execution reverted");
+        }
+        let mut fetcher = fetcher_with(&asserter);
+        fetcher.refresh_interval = Duration::from_millis(10);
+
+        // Polling never stops, so only the timeout ends `run`.
+        tokio::time::timeout(Duration::from_millis(300), fetcher.run())
+            .await
+            .expect_err("run keeps polling after storing zero fees");
 
         let rates = fetcher
             .shared_fees
@@ -536,6 +575,56 @@ mod tests {
             .fees_for(&Bytes::from(vec![0xCC; 20]));
         assert_eq!(rates.on_output(), 0);
         assert_eq!(rates.on_client_fee(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_isolated_absence_keeps_fallback() {
+        let asserter = Asserter::new();
+        // Two absences, a transient error (resets the count), then two more absences: never
+        // three in a row, so the fallback fees stay.
+        asserter.push_failure_msg("execution reverted");
+        asserter.push_failure_msg("execution reverted");
+        asserter.push_failure_msg("rate limited");
+        asserter.push_failure_msg("execution reverted");
+        asserter.push_failure_msg("execution reverted");
+        let mut fetcher = fetcher_with(&asserter);
+        fetcher.refresh_interval = Duration::from_millis(10);
+        let fallback = RouterFees::fallback().fees_for(&Bytes::from(vec![0xCC; 20])).on_output();
+
+        tokio::time::timeout(Duration::from_millis(300), fetcher.run())
+            .await
+            .expect_err("run keeps polling");
+
+        let rates = fetcher
+            .shared_fees
+            .snapshot()
+            .fees_for(&Bytes::from(vec![0xCC; 20]));
+        assert_eq!(rates.on_output(), fallback);
+    }
+
+    #[tokio::test]
+    async fn test_run_calculator_appearing_replaces_zero_fees() {
+        let asserter = Asserter::new();
+        for _ in 0..ABSENT_CONFIRMATIONS {
+            asserter.push_failure_msg("execution reverted");
+        }
+        push_defaults(&asserter, 150_000, 25_000_000);
+        push_return::<IFeeCalculator::getAllClientFeesCall>(
+            &asserter,
+            &IFeeCalculator::getAllClientFeesReturn { clients: vec![], fees: vec![] },
+        );
+        let mut fetcher = fetcher_with(&asserter);
+        fetcher.refresh_interval = Duration::from_millis(10);
+
+        tokio::time::timeout(Duration::from_millis(300), fetcher.run())
+            .await
+            .expect_err("run keeps polling");
+
+        let rates = fetcher
+            .shared_fees
+            .snapshot()
+            .fees_for(&Bytes::from(vec![0xCC; 20]));
+        assert_eq!(rates.on_output(), 150_000);
     }
 
     #[tokio::test]
