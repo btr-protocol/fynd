@@ -1110,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn is_supported_covers_monad() {
+    fn test_encoder_is_supported_on_monad() {
         assert!(Encoder::is_supported(Chain::Monad));
         assert!(!Encoder::is_supported(Chain::Starknet));
     }
