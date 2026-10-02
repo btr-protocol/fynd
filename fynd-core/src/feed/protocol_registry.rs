@@ -384,6 +384,9 @@ fn register_exchange(
         "vm:fermiswap" => {
             builder.exchange::<EVMPoolState<PreCachedDB>>("vm:fermiswap", tvl_filter.clone(), None)
         }
+        "vm:hanji" => {
+            builder.exchange::<EVMPoolState<PreCachedDB>>("vm:hanji", tvl_filter.clone(), None)
+        }
         "fluid_v1" => builder.exchange::<FluidV1>(
             "fluid_v1",
             tvl_filter.clone(),
@@ -993,8 +996,15 @@ mod tests {
 
     #[test]
     fn test_register_exchanges_registers_every_monad_protocol() {
-        let monad_protocols =
-            ["uniswap_v3", "pancakeswap_v3", "uniswap_v4", "kuru", "vm:balancer_v3", "vm:curve"];
+        let monad_protocols = [
+            "uniswap_v3",
+            "pancakeswap_v3",
+            "uniswap_v4",
+            "kuru",
+            "vm:balancer_v3",
+            "vm:curve",
+            "vm:hanji",
+        ];
         let skipped = skipped_unknown_protocols(&monad_protocols);
         assert!(
             skipped.is_empty(),
