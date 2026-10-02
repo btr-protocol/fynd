@@ -1110,6 +1110,12 @@ mod tests {
     }
 
     #[test]
+    fn is_supported_covers_monad() {
+        assert!(Encoder::is_supported(Chain::Monad));
+        assert!(!Encoder::is_supported(Chain::Starknet));
+    }
+
+    #[test]
     fn test_encoder_new_disabled_on_unsupported_chain() {
         // Starknet has no entry in ROUTER_ADDRESSES_JSON.
         // Build a registry for Ethereum (which is valid) but pass Starknet to Encoder::new —
