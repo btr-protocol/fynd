@@ -5,15 +5,22 @@
 //! from the Tycho Router (`getFeeCalculator`), then reads its precision scale (`MAX_BPS`),
 //! the default router fees, and all per-client overrides. Failed fetches keep the previously
 //! stored values, so the encoder always has a usable fee configuration.
+//!
+//! A router without `getFeeCalculator` (e.g. a lean router that charges no fees) is detected on
+//! the first fetch: fees are set to zero and the loop stops instead of polling a call that can
+//! never succeed. Absence after a successful fetch is treated as a failure and keeps the stored
+//! fees.
 
 use std::time::Duration;
 
 use alloy::{
     network::Ethereum,
     primitives::{Address, U256},
-    providers::{ProviderBuilder, RootProvider},
+    providers::{Provider, ProviderBuilder, RootProvider},
+    rpc::types::TransactionRequest,
     sol,
     sol_types::SolCall,
+    transports::RpcError,
 };
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{info, warn};
@@ -105,17 +112,34 @@ impl RouterFeeFetcher {
     /// Runs the refresh loop: fetches immediately, then on every `refresh_interval` tick.
     ///
     /// Fetch failures are logged; the previously stored fees stay in effect until a fetch
-    /// succeeds.
+    /// succeeds. If the very first fetch finds the router has no FeeCalculator, stores zero fees
+    /// and returns.
     pub async fn run(&self) {
         let mut ticker = interval(self.refresh_interval);
         // Skip missed ticks rather than catching up — fetches are best-effort.
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut fetched = false;
         loop {
             ticker.tick().await;
 
             match self.fetch_fees().await {
-                Ok(fees) => {
+                Ok(None) if fetched => {
+                    warn!(
+                        router = %self.router_address,
+                        "router stopped reporting a FeeCalculator; keeping previous values"
+                    );
+                }
+                Ok(None) => {
+                    info!(
+                        router = %self.router_address,
+                        "router has no FeeCalculator; using zero router fees, fee refresh stopped"
+                    );
+                    self.shared_fees.set(RouterFees::zero());
+                    return;
+                }
+                Ok(Some(fees)) => {
+                    fetched = true;
                     info!(
                         custom_clients = fees.custom_client_count(),
                         "router fees refreshed from on-chain FeeCalculator"
@@ -136,15 +160,12 @@ impl RouterFeeFetcher {
     /// all custom client fees.
     ///
     /// Resolves the FeeCalculator address from the router on every fetch, so calculator
-    /// upgrades are picked up without reconfiguration.
-    async fn fetch_fees(&self) -> Result<RouterFees, RouterFeeFetchError> {
-        let fee_calculator = self
-            .eth_call::<ITychoRouter::getFeeCalculatorCall>(
-                self.router_address,
-                "getFeeCalculator",
-                ITychoRouter::getFeeCalculatorCall {}.abi_encode(),
-            )
-            .await?;
+    /// upgrades are picked up without reconfiguration. Returns `None` when the router has no
+    /// FeeCalculator.
+    async fn fetch_fees(&self) -> Result<Option<RouterFees>, RouterFeeFetchError> {
+        let Some(fee_calculator) = self.fee_calculator().await? else {
+            return Ok(None);
+        };
 
         let max_fee_units = self
             .eth_call::<IFeeCalculator::MAX_BPSCall>(
@@ -216,12 +237,74 @@ impl RouterFeeFetcher {
             start += CLIENT_FEE_PAGE_SIZE;
         }
 
-        Ok(RouterFees::new(
+        Ok(Some(RouterFees::new(
             max_fee_units as u64,
             default_fee_on_output,
             default_fee_on_client_fee,
             custom_fees,
-        ))
+        )))
+    }
+
+    /// Resolves the router's FeeCalculator, or `None` when the router does not implement
+    /// `getFeeCalculator` (the call reverts, or returns no data from an address that has code) or
+    /// reports the zero address. Transport failures and a missing contract stay errors.
+    async fn fee_calculator(&self) -> Result<Option<Address>, RouterFeeFetchError> {
+        let request = TransactionRequest::default()
+            .to(self.router_address)
+            .input(
+                ITychoRouter::getFeeCalculatorCall {}
+                    .abi_encode()
+                    .into(),
+            );
+        let response = match self.provider.call(request).await {
+            Ok(response) => response,
+            // EIP-1474 code 3 is "execution reverted"; node wording for it varies.
+            Err(RpcError::ErrorResp(e))
+                if e.code == 3 ||
+                    e.message
+                        .to_lowercase()
+                        .contains("revert") =>
+            {
+                return Ok(None)
+            }
+            Err(e) => {
+                return Err(RouterFeeFetchError::Call {
+                    method: "getFeeCalculator",
+                    contract: self.router_address,
+                    reason: e.to_string(),
+                })
+            }
+        };
+        if response.is_empty() {
+            // Empty data also means "no contract here" (wrong address or chain): that is a
+            // misconfiguration, not a router without fees.
+            let code = self
+                .provider
+                .get_code_at(self.router_address)
+                .await
+                .map_err(|e| RouterFeeFetchError::Call {
+                    method: "getFeeCalculator",
+                    contract: self.router_address,
+                    reason: format!("failed to read router code: {e}"),
+                })?;
+            if code.is_empty() {
+                return Err(RouterFeeFetchError::Call {
+                    method: "getFeeCalculator",
+                    contract: self.router_address,
+                    reason: "no contract code at router address".to_string(),
+                });
+            }
+            return Ok(None);
+        }
+        let address =
+            ITychoRouter::getFeeCalculatorCall::abi_decode_returns(&response).map_err(|e| {
+                RouterFeeFetchError::Call {
+                    method: "getFeeCalculator",
+                    contract: self.router_address,
+                    reason: format!("failed to decode response: {e}"),
+                }
+            })?;
+        Ok((!address.is_zero()).then_some(address))
     }
 
     /// Performs an `eth_call` of `calldata` against `contract` and decodes the return value.
@@ -298,6 +381,7 @@ mod tests {
         let fees = fetcher_with(&asserter)
             .fetch_fees()
             .await
+            .unwrap()
             .unwrap();
 
         let rates_a = fees.fees_for(&Bytes::from(client_a.as_slice().to_vec()));
@@ -359,11 +443,124 @@ mod tests {
         let fees = fetcher_with(&asserter)
             .fetch_fees()
             .await
+            .unwrap()
             .unwrap();
 
         assert_eq!(fees.custom_client_count(), CLIENT_FEE_PAGE_SIZE + 1);
         let last_rates = fees.fees_for(&Bytes::from(last_client.as_slice().to_vec()));
         assert_eq!(last_rates.on_output(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_fees_revert_means_no_fee_calculator() {
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("execution reverted");
+
+        let fees = fetcher_with(&asserter)
+            .fetch_fees()
+            .await
+            .unwrap();
+
+        assert!(fees.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_fees_empty_return_from_contract_means_no_fee_calculator() {
+        let asserter = Asserter::new();
+        asserter.push_success(&AlloyBytes::new());
+        asserter.push_success(&AlloyBytes::from(vec![0x60, 0x80]));
+
+        let fees = fetcher_with(&asserter)
+            .fetch_fees()
+            .await
+            .unwrap();
+
+        assert!(fees.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_fees_empty_return_without_code_is_error() {
+        let asserter = Asserter::new();
+        asserter.push_success(&AlloyBytes::new());
+        asserter.push_success(&AlloyBytes::new());
+
+        let err = fetcher_with(&asserter)
+            .fetch_fees()
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("no contract code"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_fees_zero_calculator_address_means_no_fee_calculator() {
+        let asserter = Asserter::new();
+        push_return::<ITychoRouter::getFeeCalculatorCall>(&asserter, &Address::ZERO);
+
+        let fees = fetcher_with(&asserter)
+            .fetch_fees()
+            .await
+            .unwrap();
+
+        assert!(fees.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_fees_non_revert_node_error_is_error() {
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("rate limited");
+
+        let err = fetcher_with(&asserter)
+            .fetch_fees()
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("rate limited"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_run_stores_zero_fees_and_stops_without_fee_calculator() {
+        let asserter = Asserter::new();
+        asserter.push_failure_msg("execution reverted");
+        let fetcher = fetcher_with(&asserter);
+
+        // A single revert response suffices: a second poll would hit an empty mock queue and
+        // `run` would never return, so completing proves the loop stopped.
+        tokio::time::timeout(Duration::from_secs(5), fetcher.run())
+            .await
+            .expect("run stops when the router has no FeeCalculator");
+
+        let rates = fetcher
+            .shared_fees
+            .snapshot()
+            .fees_for(&Bytes::from(vec![0xCC; 20]));
+        assert_eq!(rates.on_output(), 0);
+        assert_eq!(rates.on_client_fee(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_keeps_fees_when_calculator_disappears_after_success() {
+        let asserter = Asserter::new();
+        push_defaults(&asserter, 150_000, 25_000_000);
+        push_return::<IFeeCalculator::getAllClientFeesCall>(
+            &asserter,
+            &IFeeCalculator::getAllClientFeesReturn { clients: vec![], fees: vec![] },
+        );
+        asserter.push_failure_msg("execution reverted");
+        let mut fetcher = fetcher_with(&asserter);
+        fetcher.refresh_interval = Duration::from_millis(10);
+
+        // The loop must keep polling past the revert, so only the timeout ends it.
+        tokio::time::timeout(Duration::from_millis(200), fetcher.run())
+            .await
+            .expect_err("run keeps polling after a successful fetch");
+
+        let rates = fetcher
+            .shared_fees
+            .snapshot()
+            .fees_for(&Bytes::from(vec![0xCC; 20]));
+        assert_eq!(rates.on_output(), 150_000);
+        assert_eq!(rates.on_client_fee(), 25_000_000);
     }
 
     /// Live integration test against the deployed Tycho Router on Ethereum mainnet.
@@ -390,7 +587,8 @@ mod tests {
         let fees = fetcher
             .fetch_fees()
             .await
-            .expect("should read fees from the live mainnet FeeCalculator");
+            .expect("should read fees from the live mainnet FeeCalculator")
+            .expect("mainnet router has a FeeCalculator");
 
         // The deployed FeeCalculator must expose a non-zero precision scale, and default
         // rates must resolve for an arbitrary (unknown) client.

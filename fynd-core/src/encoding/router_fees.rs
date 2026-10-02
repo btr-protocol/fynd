@@ -107,6 +107,11 @@ impl RouterFees {
         Self::new(FALLBACK_MAX_FEE_UNITS, FALLBACK_FEE_ON_OUTPUT, 0, FxHashMap::default())
     }
 
+    /// No fees at all: for routers without a FeeCalculator, which charge nothing.
+    pub fn zero() -> Self {
+        Self::new(FALLBACK_MAX_FEE_UNITS, 0, 0, FxHashMap::default())
+    }
+
     /// Fee units representing 100% (the contract's `MAX_BPS`).
     pub fn max_fee_units(&self) -> u64 {
         self.max_fee_units
